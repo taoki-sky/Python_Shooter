@@ -89,7 +89,7 @@ class Paddle(pygame.sprite.Sprite):
         super().__init__()
         self.width = 100
         self.height = 20
-        # Create or load paddle image
+        # 初期のrectを作成
         paddle_surface = pygame.Surface((self.width, self.height))
         self.image = load_or_create_image(paddle_img_path, paddle_surface, BLUE)
         self.rect = self.image.get_rect()
@@ -97,14 +97,74 @@ class Paddle(pygame.sprite.Sprite):
         self.rect.bottom = HEIGHT - 10
         self.speed = 8
         self.cooldown = 0
+        self.base_color = BLUE
+    
+    def update_size(self, bullet_width):
+        # Base width is 100, increases with bullet_width after 5
+        if bullet_width <= 5:
+            new_width = 100
+            color = BLUE  # 基本色
+        else:
+            # 弾数が5を超えると拡大、最大でウィンドウ幅の1/3まで
+            max_width = WIDTH // 3
+            growth_factor = (bullet_width - 5) / 20  # 20発で最大幅に
+            growth_percentage = min(1.0, growth_factor)
+            new_width = min(max_width, 100 + int((max_width - 100) * growth_percentage))
+            
+            # 弾数に応じて色も変化
+            if bullet_width <= 10:
+                # 青から緑へのグラデーション
+                blue_component = max(0, 255 - (bullet_width - 5) * 25)
+                green_component = min(255, 128 + (bullet_width - 5) * 25)
+                color = (0, green_component, blue_component)
+            elif bullet_width <= 20:
+                # 緑から黄色へのグラデーション
+                red_component = min(255, (bullet_width - 10) * 25)
+                color = (red_component, 255, 0)
+            else:
+                # 黄色から赤へのグラデーション
+                green_component = max(0, 255 - (bullet_width - 20) * 12)
+                color = (255, green_component, 0)
+        
+        # Only update if size changed
+        if self.width != new_width or self.base_color != color:
+            self.width = new_width
+            self.base_color = color
+            # Create or load paddle image
+            paddle_surface = pygame.Surface((self.width, self.height))
+            
+            # 描画時に色を適用
+            if os.path.exists(paddle_img_path):
+                try:
+                    self.image = pygame.image.load(paddle_img_path).convert_alpha()
+                    self.image = pygame.transform.scale(self.image, (self.width, self.height))
+                except pygame.error:
+                    paddle_surface.fill(color)
+                    self.image = paddle_surface
+            else:
+                paddle_surface.fill(color)
+                self.image = paddle_surface
+                
+            old_centerx = self.rect.centerx
+            old_bottom = self.rect.bottom
+            self.rect = self.image.get_rect()
+            self.rect.centerx = old_centerx
+            self.rect.bottom = old_bottom
         
     def update(self):
         # Movement based on key input
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_LEFT] and self.rect.left > 0:
+        if keys[pygame.K_LEFT]:
             self.rect.x -= self.speed
-        if keys[pygame.K_RIGHT] and self.rect.right < WIDTH:
+        if keys[pygame.K_RIGHT]:
             self.rect.x += self.speed
+            
+        # パドルがある程度画面外に出られるように（幅の半分まで）
+        max_offscreen = self.width // 2
+        if self.rect.left < -max_offscreen:
+            self.rect.left = -max_offscreen
+        if self.rect.right > WIDTH + max_offscreen:
+            self.rect.right = WIDTH + max_offscreen
             
         # Decrease cooldown timer
         if self.cooldown > 0:
@@ -125,8 +185,8 @@ class Paddle(pygame.sprite.Sprite):
             else:
                 # Calculate angle spread based on bullet count
                 # More bullets = wider spread, but capped
-                max_spread = 45  # Maximum spread angle in degrees
-                angle_spread = min(max_spread, 5 + bullet_width * 1.5)
+                max_spread = 70  # Maximum spread angle in degrees
+                angle_spread = min(max_spread, 5 + bullet_width * 1.0)
                 
                 # Fire bullets in a fan pattern
                 for i in range(bullet_width):
@@ -145,9 +205,8 @@ class Paddle(pygame.sprite.Sprite):
                     all_sprites.add(bullet)
                     bullets.add(bullet)
             
-            # Cooldown scales with bullet width - more bullets = slightly longer cooldown
-            # But we cap it to maintain playability
-            self.cooldown = min(20, 8 + bullet_width // 3)
+            # 弾幕ゲームのための超短クールダウン - 弾数に関係なく常に短い固定値
+            self.cooldown = 3  # 3フレーム = 約0.05秒の超短クールダウン
 
 # Ball class
 class Ball(pygame.sprite.Sprite):
@@ -299,10 +358,13 @@ class Boss(pygame.sprite.Sprite):
         self.rect = self.image.get_rect()
         self.rect.centerx = WIDTH // 2
         self.rect.y = 50
-        # Boss speed increases with level
-        self.speed_x = 2 + (level * 0.5)
+        # Boss speed increases with level but is capped for stability
+        self.speed_x = min(2 + (level * 0.2), 5)
+        self.movement_direction = 1  # 1: 右, -1: 左
+        self.margin = 20  # 画面端からのマージン
+        
         # Boss health scales exponentially with level
-        self.health = 25 * (level ** 1.5)
+        self.health = 25 * (level ** 5.0) * 1000
         self.max_health = self.health
         self.shoot_timer = 0
         # Boss shoots faster at higher levels
@@ -313,12 +375,25 @@ class Boss(pygame.sprite.Sprite):
         self.bullet_count = min(10, 1 + level)  # Number of bullets fired at once
         
     def update(self):
-        # Boss movement
-        self.rect.x += self.speed_x
+        # 移動ロジックを完全にリセット
+        # 右端に到達したら左に、左端に到達したら右に移動
+        if self.movement_direction == 1:  # 右に移動中
+            if self.rect.right >= WIDTH - self.margin:
+                self.movement_direction = -1  # 方向転換
+        else:  # 左に移動中
+            if self.rect.left <= self.margin:
+                self.movement_direction = 1  # 方向転換
         
-        # Change direction when hitting walls
-        if self.rect.left <= 0 or self.rect.right >= WIDTH:
-            self.speed_x = -self.speed_x
+        # 計算された方向に移動
+        self.rect.x += self.speed_x * self.movement_direction
+        
+        # 念のため画面外に出ないように強制調整
+        if self.rect.left < 0:
+            self.rect.left = 0
+            self.movement_direction = 1
+        if self.rect.right > WIDTH:
+            self.rect.right = WIDTH
+            self.movement_direction = -1
             
         # Boss shooting
         self.shoot_timer += 1
@@ -480,6 +555,9 @@ def start_level(level_num):
     if is_boss_level:
         # Create boss
         boss = Boss(level_num // 3)  # Boss level
+        # 確実に画面内に配置
+        boss.rect.centerx = WIDTH // 2
+        boss.rect.y = 50
         all_sprites.add(boss)
         boss_group.add(boss)
         
@@ -502,6 +580,17 @@ start_level(level)
 # Main game loop
 clock = pygame.time.Clock()
 running = True
+
+# Function to draw text with shadow for better visibility
+def draw_text_with_shadow(surface, text, font, pos, color, shadow_color=(0, 0, 0)):
+    # Draw shadow
+    shadow_pos = (pos[0] + 2, pos[1] + 2)
+    shadow_surf = font.render(text, True, shadow_color)
+    surface.blit(shadow_surf, shadow_pos)
+    
+    # Draw text
+    text_surf = font.render(text, True, color)
+    surface.blit(text_surf, pos)
 
 while running:
     # Frame rate setting
@@ -570,17 +659,10 @@ while running:
             for boss in hit_bosses:
                 if boss.hit(bullet_power):  # Apply damage and check if defeated
                     boss.kill()  # Remove boss
-                    score += 500  # Bonus points for defeating boss
+                    score += 500 * level  # Bonus points for defeating boss (レベルに応じて増加)
                     
-                    # Drop multiple power-ups when boss is defeated
-                    for i in range(3):
-                        powerup = PowerUp(
-                            boss.rect.centerx + random.randint(-50, 50),
-                            boss.rect.centery + random.randint(-30, 30),
-                            random.randint(0, 2)
-                        )
-                        all_sprites.add(powerup)
-                        powerups.add(powerup)
+                    # ボス撃破時のパワーアップドロップなし
+                    
                 score += 20
     
     # Paddle and power-up collision
@@ -592,9 +674,10 @@ while running:
             
         if powerup.type == 0:  # Extra damage
             bullet_power += 1
-        elif powerup.type == 1:  # Multi-shot
-            if bullet_width < 20:  # Maximum 20 bullets
-                bullet_width += 1
+        elif powerup.type == 1:  # Multi-shot - now unlimited
+            bullet_width += 1
+            # Update paddle size based on new bullet_width
+            paddle.update_size(bullet_width)
         elif powerup.type == 2:  # Extra life
             lives += 1
     
@@ -641,6 +724,9 @@ while running:
                             ball.reset()
                             is_boss_level = False
                             
+                            # Update paddle size for reset
+                            paddle.update_size(bullet_width)
+                            
                             # Clear all entities and recreate initial level
                             for sprite in all_sprites:
                                 if isinstance(sprite, (Block, PowerUp, Boss, BossBullet)):
@@ -684,23 +770,27 @@ while running:
     if is_boss_level and boss_group:
         for boss in boss_group:
             boss.draw_health_bar(screen)
+            # ボスのHP表示を追加
+            hp_text = f"Boss HP: {int(boss.health):,}"
+            draw_text_with_shadow(screen, hp_text, font, (WIDTH//2 - 100, boss.rect.bottom + 10), RED)
     
-    # Display score and other info
-    score_text = font.render(f"Score: {score}", True, WHITE)
-    lives_text = font.render(f"Lives: {lives}", True, WHITE)
-    level_text = font.render(f"Level: {level}", True, WHITE)
-    power_text = font.render(f"Power: {bullet_power}", True, WHITE)
-    width_text = font.render(f"Bullets: {bullet_width}/20", True, WHITE)
+    # 全てのテキスト表示を画面上部に整理（複数行に分割）
+    # 情報バー背景を描画（高さを拡張）
+    info_bar_height = 70  # 3行分のスペース
+    pygame.draw.rect(screen, (30, 30, 30), (0, 0, WIDTH, info_bar_height))
     
-    screen.blit(score_text, (10, 10))
-    screen.blit(lives_text, (WIDTH - 120, 10))
-    screen.blit(level_text, (WIDTH - 120, 40))
-    screen.blit(power_text, (10, 40))
-    screen.blit(width_text, (10, 70))
+    # 1行目: スコアと残機
+    draw_text_with_shadow(screen, f"Score: {score}", font, (10, 10), WHITE)
+    draw_text_with_shadow(screen, f"Lives: {lives}", font, (WIDTH - 120, 10), WHITE)
     
-    # Display controls
-    controls_text = font.render("Arrow Keys: Move  Z: Shoot  Space: Launch Ball", True, WHITE)
-    screen.blit(controls_text, (WIDTH//2 - 250, HEIGHT - 30))
+    # 2行目: 弾の情報とレベル
+    draw_text_with_shadow(screen, f"Bullets: {bullet_width}", font, (10, 35), WHITE)
+    draw_text_with_shadow(screen, f"Power: {bullet_power}", font, (200, 35), WHITE)
+    draw_text_with_shadow(screen, f"Level: {level}", font, (WIDTH - 120, 35), WHITE)
+    
+    # 3行目: パドル情報と操作説明
+    draw_text_with_shadow(screen, f"Paddle: {paddle.width}px", font, (10, 60), WHITE)
+    draw_text_with_shadow(screen, "Arrow Keys: Move  Z: Shoot  Space: Launch Ball", font, (WIDTH//2 - 200, 60), WHITE)
     
     # Update display
     pygame.display.flip()
